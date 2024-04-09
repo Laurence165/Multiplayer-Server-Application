@@ -18,21 +18,25 @@
 #include <arpa/inet.h>
 
 #ifndef PORT
-    #define PORT 30100
+    #define PORT 54890
 #endif
 
 #define SECONDS 10
-#define MAX_BUF 128
+#define MAX_BUF 140
+#define MAX_NAME 40
+
 
 struct client {
     int fd;
     struct in_addr ipaddr;
+    char name[MAX_NAME];
     struct client *next;
 };
 
 static struct client *addclient(struct client *top, int fd, struct in_addr addr);
 static struct client *removeclient(struct client *top, int fd);
-static void broadcast(struct client *top, char *s, int size);
+// static void broadcast(struct client *top, char *s, int size);
+static void broadcast(struct client *top, char *s, int size, int exclude_fd);
 int handleclient(struct client *p, struct client *top);
 
 
@@ -134,7 +138,8 @@ int handleclient(struct client *p, struct client *top) {
     } else if (len <= 0) { 
         printf("Disconnect from %s\n", inet_ntoa(p->ipaddr));
         sprintf(outbuf, "Goodbye %s\r\n", inet_ntoa(p->ipaddr));
-        broadcast(top, outbuf, strlen(outbuf));
+        // broadcast(top, outbuf, strlen(outbuf));
+        broadcast(top, outbuf, strlen(outbuf), -1);
         return -1;
     }
 }
@@ -178,10 +183,26 @@ int bindandlisten(void) {
 }
 
 static struct client *addclient(struct client *top, int fd, struct in_addr addr) {
+    char buf[MAX_BUF];
     struct client *p = malloc(sizeof(struct client));
     if (!p) {
         perror("malloc");
         exit(1);
+    }
+
+    // Ask for the client's name
+    strcpy(buf, "Please enter your name:\n");
+    write(fd, buf, strlen(buf));
+
+    // Read the client's name
+    int nbytes = read(fd, buf, sizeof(buf) - 1);
+    if (nbytes > 0) {
+        buf[nbytes - 1] = '\0';  // Replace newline character
+        strncpy(p->name, buf, sizeof(p->name));
+        p->name[sizeof(p->name) - 1] = '\0';  // Ensure null-termination
+    } else {
+        free(p);
+        return top;  // If reading name fails, abort adding the client
     }
 
     printf("Adding client %s\n", inet_ntoa(addr));
@@ -190,6 +211,13 @@ static struct client *addclient(struct client *top, int fd, struct in_addr addr)
     p->ipaddr = addr;
     p->next = top;
     top = p;
+
+    // Notify the new client and others
+    sprintf(buf, "You are awaiting an opponent.\n");
+    write(fd, buf, strlen(buf));
+    // broadcast(top, "Someone new has entered the arena.\n", strlen("Someone new has entered the arena.\n"), new_client_fd);
+    broadcast(top, "Someone new has entered the arena.\n", strlen("Someone new has entered the arena.\n"), fd);
+
     return top;
 }
 
@@ -212,11 +240,20 @@ static struct client *removeclient(struct client *top, int fd) {
     return top;
 }
 
-
-static void broadcast(struct client *top, char *s, int size) {
+static void broadcast(struct client *top, char *s, int size, int exclude_fd) {
     struct client *p;
     for (p = top; p; p = p->next) {
-        write(p->fd, s, size);
+        if (p->fd != exclude_fd) {
+            write(p->fd, s, size);
+        }
+        /* should probably check write() return value and perhaps remove client */
     }
-    /* should probably check write() return value and perhaps remove client */
 }
+
+// static void broadcast(struct client *top, char *s, int size) {
+//     struct client *p;
+//     for (p = top; p; p = p->next) {
+//         write(p->fd, s, size);
+//     }
+//     /* should probably check write() return value and perhaps remove client */
+// }
