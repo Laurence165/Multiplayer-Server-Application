@@ -31,13 +31,74 @@ struct client {
     struct in_addr ipaddr;
     char name[MAX_NAME];
     struct client *next;
+    int in_match; // 0 is waiting 1 is in match
+    struct client *opp;
+    struct client *prev_opp;
 };
+
+struct client *waiting_clients_queue = NULL; // Pointer to the first client in the waiting queue
+
+
+void enqueue_client(struct client **queue, struct client *new_client) {
+    struct client *p = *queue;
+    if (p == NULL) {
+        // Queue is empty, add new client as the first client
+        *queue = new_client;
+    } else {
+        // Find the end of the queue and add the new client there
+        while (p->next != NULL) {
+            p = p->next;
+        }
+        p->next = new_client;
+    }
+}
+
+struct client *dequeue_client(struct client **queue) {
+    if (*queue == NULL) {
+        // Queue is empty
+        return NULL;
+    } else {
+        // Remove the first client from the queue
+        struct client *first_client = *queue;
+        *queue = first_client->next;
+        first_client->next = NULL; // Disconnect this client from the queue
+        return first_client;
+    }
+}
+
+void match_clients(struct client *head) {
+    struct client *current = head;
+
+    struct client *p1 = NULL;
+    struct client *p2 = NULL;
+    while (current != NULL) {
+        if (!current->in_match) {
+            if (p1 == NULL) {
+                p1 = current;
+            } else {
+                p2 = current;
+                p1->in_match = 1;
+                p2->in_match = 1;
+                p1->opp = p2;
+                p2->opp = p1;
+                start_match(p1, p2);  // start the match between p1 and p2
+                p1 = NULL;  // reset p1 for the next match
+            }
+        }
+        current = current->next;  // properly move to the next client
+    }
+    // If there was an odd number of clients, p1 might still be waiting
+    if (p1 != NULL) {
+        // Handle the case where there's one client left without a pair
+    }
+}
 
 static struct client *addclient(struct client *top, int fd, struct in_addr addr);
 static struct client *removeclient(struct client *top, int fd);
 // static void broadcast(struct client *top, char *s, int size);
 static void broadcast(struct client *top, char *s, int size, int exclude_fd);
 int handleclient(struct client *p, struct client *top);
+
 
 
 int bindandlisten(void);
@@ -97,6 +158,7 @@ int main(void) {
             }
             printf("connection from %s\n", inet_ntoa(q.sin_addr));
             head = addclient(head, clientfd, q.sin_addr);
+            //match_clients(head);
         }
 
         for(i = 0; i <= maxfd; i++) {
@@ -210,20 +272,33 @@ static struct client *addclient(struct client *top, int fd, struct in_addr addr)
     p->fd = fd;
     p->ipaddr = addr;
     p->next = top;
+    p->in_match = 0;
+    p->opp = NULL;
+    p->prev_opp = NULL;
     top = p;
 
     // Notify the new client and others
-    sprintf(buf, "You are awaiting an opponent.\n");
+    sprintf(buf, "You are awaiting an opponent.\n"); 
     write(fd, buf, strlen(buf));
     // broadcast(top, "Someone new has entered the arena.\n", strlen("Someone new has entered the arena.\n"), new_client_fd);
-    broadcast(top, "Someone new has entered the arena.\n", strlen("Someone new has entered the arena.\n"), fd);
+
+    char message[MAX_NAME+strlen(" has entered the arena")];
+    sprintf(message, "%s has entered the arena\n", p->name);
+    broadcast(top, message, strlen(message), fd);
+
+    //add client to waiting client queue
+    // Enqueue the new client
+    //nqueue_client(&waiting_clients_queue, p);
+
+    // Attempt to match clients
+    match_clients(top);
 
     return top;
 }
 
 static struct client *removeclient(struct client *top, int fd) {
     struct client **p;
-
+ 
     for (p = &top; *p && (*p)->fd != fd; p = &(*p)->next)
         ;
     // Now, p points to (1) top, or (2) a pointer to another client
@@ -231,6 +306,15 @@ static struct client *removeclient(struct client *top, int fd) {
     if (*p) {
         struct client *t = (*p)->next;
         printf("Removing client %d %s\n", fd, inet_ntoa((*p)->ipaddr));
+
+        if ((*p)->in_match && (*p)->opp != NULL) {
+            (*p)->opp->in_match = 0; // Clear the in_match flag for the opponent
+            (*p)->opp->opp = NULL; // Clear the in_match flag for the opponent
+            // Correctly send the message to the opponent using their fd
+            write((*p)->opp->fd, "Opponent Disconnected, Going back to arena\n", strlen("Opponent Disconnected, Going back to arena\n"));
+            match_clients(top);
+        }
+
         free(*p);
         *p = t;
     } else {
@@ -240,20 +324,23 @@ static struct client *removeclient(struct client *top, int fd) {
     return top;
 }
 
+void start_match(struct client *client1, struct client *client2) {
+    char buf[MAX_BUF];
+
+    // Notify both clients that the match is starting
+    sprintf(buf, "Match is starting between %s and %s\n", client1->name, client2->name);
+    write(client1->fd, buf, strlen(buf));
+    write(client2->fd, buf, strlen(buf));
+
+    // Perform any other setup required for the match here
+}
+
 static void broadcast(struct client *top, char *s, int size, int exclude_fd) {
     struct client *p;
     for (p = top; p; p = p->next) {
-        if (p->fd != exclude_fd) {
+        if (p->fd != exclude_fd && !p->in_match) { 
             write(p->fd, s, size);
         }
         /* should probably check write() return value and perhaps remove client */
     }
 }
-
-// static void broadcast(struct client *top, char *s, int size) {
-//     struct client *p;
-//     for (p = top; p; p = p->next) {
-//         write(p->fd, s, size);
-//     }
-//     /* should probably check write() return value and perhaps remove client */
-// }
