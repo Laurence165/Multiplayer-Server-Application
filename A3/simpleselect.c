@@ -11,7 +11,7 @@
 #include <time.h>
 
 #ifndef PORT
-    #define PORT 8888
+    #define PORT 54890
 #endif
 
 #define SECONDS 10
