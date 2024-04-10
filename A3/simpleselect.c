@@ -39,33 +39,6 @@ struct client {
 struct client *waiting_clients_queue = NULL; // Pointer to the first client in the waiting queue
 
 
-void enqueue_client(struct client **queue, struct client *new_client) {
-    struct client *p = *queue;
-    if (p == NULL) {
-        // Queue is empty, add new client as the first client
-        *queue = new_client;
-    } else {
-        // Find the end of the queue and add the new client there
-        while (p->next != NULL) {
-            p = p->next;
-        }
-        p->next = new_client;
-    }
-}
-
-struct client *dequeue_client(struct client **queue) {
-    if (*queue == NULL) {
-        // Queue is empty
-        return NULL;
-    } else {
-        // Remove the first client from the queue
-        struct client *first_client = *queue;
-        *queue = first_client->next;
-        first_client->next = NULL; // Disconnect this client from the queue
-        return first_client;
-    }
-}
-
 void match_clients(struct client *head) {
     struct client *current = head;
 
