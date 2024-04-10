@@ -64,7 +64,7 @@ void match_clients(struct client *head) {
         if (!current->in_match) {
             if (p1 == NULL) {
                 p1 = current;
-            } else {
+            } else if (p1->prev_opp!=current) {
                 p2 = current;
                 p1->in_match = 1;
                 p2->in_match = 1;
@@ -100,12 +100,37 @@ void start_match(struct client *client1, struct client *client2) {
     send_menu(active_player);
 }
 
+void end_match(struct client *client1, struct client *client2,struct client *top){
+    //client 1 is the winner and client 2 is the loser
+    char buf[MAX_BUF];
+
+    //write to players
+    
+    sprintf(buf, "You have been defeated by %s!\n", client1->name);
+    write(client2->fd, buf, strlen(buf));
+
+    sprintf(buf,"Going back to arena\r\n");
+
+    write(client1->fd, buf, strlen(buf));
+    write(client2->fd, buf, strlen(buf));
+    
+    client1->prev_opp = client2;
+    client2->prev_opp = client1;
+    client1->opp = NULL;
+    client2->opp = NULL;
+    client1->in_match = 0;
+    client2->in_match = 0;
+    match_clients(top);
+}
+
 void send_menu(struct client *p) {
     char menu[MAX_BUF];
     sprintf(menu, "Valid commands:\n- attack\n- powermove (if available)\n");
-    write(p->fd, menu, strlen(menu));
+    if (p!=NULL){
+        write(p->fd, menu, strlen(menu));
+    }
 }
-void attack(struct client *p, struct client *top) {
+int attack(struct client *p, struct client *top) {
     char outbuf[512];
     int damage_amount = rand() % 5 + 2; // Regular attack: 2-6 hitpoints damage
     opponent = p->opp;  // Set opponent
@@ -115,15 +140,16 @@ void attack(struct client *p, struct client *top) {
             // Opponent defeated
             sprintf(outbuf, "You defeated %s!\r\n", opponent->name);
             write(p->fd, outbuf, strlen(outbuf));
-            sprintf(outbuf, "%s has been defeated!\r\n", opponent->name);
-            broadcast(top, outbuf, strlen(outbuf), p->fd);
             // Remove defeated opponent
-            top = removeclient(top, opponent->fd);
+            end_match(p,opponent,top);
+            //top = removeclient(top, opponent->fd);
         } else {
             // Inform both clients about the attack and damage inflicted
             sprintf(outbuf, "You attacked %s and inflicted %d damage!\r\n", opponent->name, damage_amount);
             write(p->fd, outbuf, strlen(outbuf));
             sprintf(outbuf, "%s attacked you and inflicted %d damage!\r\n", p->name, damage_amount);
+            write(opponent->fd, outbuf, strlen(outbuf));
+            sprintf(outbuf, "You have %d health remaining !\r\n", opponent->hp);
             write(opponent->fd, outbuf, strlen(outbuf));
         }
     } else {
@@ -131,9 +157,10 @@ void attack(struct client *p, struct client *top) {
         sprintf(outbuf, "No opponent found!\r\n");
         write(p->fd, outbuf, strlen(outbuf));
     }
+    return 1;
 }
 
-void powermove(struct client *p, struct client *top) {
+int powermove(struct client *p, struct client *top) {
     char outbuf[512];
     if (p->powermoves > 0) {
         // 50% chance of hit
@@ -147,15 +174,16 @@ void powermove(struct client *p, struct client *top) {
                     // Opponent defeated
                     sprintf(outbuf, "You defeated %s with a powermove!\r\n", opponent->name);
                     write(p->fd, outbuf, strlen(outbuf));
-                    sprintf(outbuf, "%s has been defeated by a powermove!\r\n", opponent->name);
-                    broadcast(top, outbuf, strlen(outbuf), p->fd);
                     // Remove defeated opponent
-                    top = removeclient(top, opponent->fd);
+                    //top = removeclient(top, opponent->fd);
+                    end_match(p,opponent,top);
                 } else {
                     // Inform both clients about the powermove and damage inflicted
                     sprintf(outbuf, "You used a powermove against %s and inflicted %d damage!\r\n", opponent->name, damage_amount);
                     write(p->fd, outbuf, strlen(outbuf));
                     sprintf(outbuf, "%s used a powermove against you and inflicted %d damage!\r\n", p->name, damage_amount);
+                    write(opponent->fd, outbuf, strlen(outbuf));
+                    sprintf(outbuf, "You have %d health remaining !\r\n", opponent->hp);
                     write(opponent->fd, outbuf, strlen(outbuf));
                 }
             } else {
@@ -174,8 +202,11 @@ void powermove(struct client *p, struct client *top) {
         // No powermoves remaining
         sprintf(outbuf, "You have no powermoves remaining!\r\n");
         write(p->fd, outbuf, strlen(outbuf));
+        return 0;
     }
+    return 1;
 }
+
 
 int handleclient(struct client *p, struct client *top) {
     char buf[256];
@@ -187,7 +218,8 @@ int handleclient(struct client *p, struct client *top) {
         if (strncmp(buf, "a", strlen("a")) == 0) {
             // Player wants to perform a regular attack
             if (p == active_player) {
-                attack(p, top);
+                if (attack(p, top)==1)
+                {active_player = p->opp;}
             } else {
                 // Inactive player's turn or invalid command, discard
                 sprintf(outbuf, "It's not your turn to attack.\n");
@@ -196,7 +228,9 @@ int handleclient(struct client *p, struct client *top) {
         } else if (strncmp(buf, "p", strlen("p")) == 0) {
             // Player wants to perform a powermove
             if (p == active_player) {
-                powermove(p, top);
+                if (powermove(p, top)==1)
+                {active_player = p->opp;}
+                
             } else {
                 // Inactive player's turn or invalid command, discard
                 sprintf(outbuf, "It's not your turn to attack.\n");
@@ -217,21 +251,26 @@ int handleclient(struct client *p, struct client *top) {
                 // Send the message to both players
                 write(p->fd, outbuf, strlen(outbuf));
                 write(p->opp->fd, outbuf, strlen(outbuf));
-                } else {
-                    // Inactive player's turn or invalid command, discard
-                    sprintf(outbuf, "It's not your turn to talk.\n");
-                    write(p->fd, outbuf, strlen(outbuf));
-                }
-            } else {
+                } 
+            else {
+                // Inactive player's turn or invalid command, discard
+                sprintf(outbuf, "It's not your turn to talk.\n");
+                write(p->fd, outbuf, strlen(outbuf));
+            }
+
+
+            } 
+            else {
             // Invalid command, discard
             sprintf(outbuf, "Invalid command.\n");
             write(p->fd, outbuf, strlen(outbuf));
             }
         // Send the menu of valid commands to the active player
-        if (p == active_player) {
-            sprintf(outbuf, "Menu:\n(a) Attack\n(p) Powermove\n(s) Say something\n");
-            write(p->fd, outbuf, strlen(outbuf));
-        }
+        // if (p == active_player) {
+        //     sprintf(outbuf, "Menu:\n(a) Attack\n(p) Powermove\n(s) Say something\n");
+        //     write(p->fd, outbuf, strlen(outbuf));
+        // }
+        send_menu(active_player);
         return 0;
         } else  { 
         printf("Disconnect from %s\n", inet_ntoa(p->ipaddr));
@@ -390,6 +429,7 @@ int main(void) {
             head = addclient(head, clientfd, q.sin_addr);
             //match_clients(head);
         }
+        match_clients(head);
 
         for(i = 0; i <= maxfd; i++) {
             if (FD_ISSET(i, &rset)) {
