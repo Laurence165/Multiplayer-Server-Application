@@ -14,33 +14,35 @@
     #define PORT 54890
 #endif
 
-#define SECONDS 10
+#define SECONDS 2
 #define MAX_BUF 140
 #define MAX_NAME 40
-#define MAX_HP 30
-#define MIN_HP 20
+#define MAX_HP 10
+#define MIN_HP 5
 #define MAX_POWERMOVES 3
 #define MIN_POWERMOVES 1
 #define REGULAR_DAMAGE_MIN 2
 #define REGULAR_DAMAGE_MAX 6
 #define POWERMOVE_DAMAGE_MULTIPLIER 3
 #define POWERMOVE_MISS_CHANCE 50
-
+#define BATTLE 2
+#define WAITING 1
+#define IN_LOBBY 0
 struct client {
     int fd;
     struct in_addr ipaddr;
     char name[MAX_NAME];
     struct client *next;
-    int in_match; // 0 is waiting, 1 is in match
+    int status; // 0 is in lobby, 1 is waiting, 2 is battle
     struct client *opp;
     struct client *prev_opp;
     int hp;
     int powermoves;
+    int isActive; //0 for inactive, 1 is active
 };
 
-struct client *waiting_clients_queue = NULL; // Pointer to the first client in the waiting queue
-struct client *active_player = NULL; // Pointer to the currently active player
-struct client *opponent = NULL; // Pointer to the opponent of the active player
+//struct client *active_player = NULL; // Pointer to the currently active player
+//struct client *opponent = NULL; // Pointer to the opponent of the active player
 
 // Initialize the random number generator seed
 void init_random_seed() {
@@ -54,22 +56,22 @@ int rand_range(int min, int max) {
 void start_match(struct client *client1, struct client *client2);
 void send_menu(struct client *p);
 void broadcast(struct client *top, char *s, int size, int exclude_fd);
+void enterLobby(struct client *p);
 struct client *removeclient(struct client *top, int fd);
 int bindandlisten(void);
+
 void match_clients(struct client *head) {
+
     struct client *current = head;
     struct client *p1 = NULL;
     struct client *p2 = NULL;
     while (current != NULL) {
-        if (!current->in_match) {
+        if (current->status == WAITING) {
             if (p1 == NULL) {
                 p1 = current;
             } else if (p1->prev_opp!=current) {
                 p2 = current;
-                p1->in_match = 1;
-                p2->in_match = 1;
-                p1->opp = p2;
-                p2->opp = p1;
+                
                 start_match(p1, p2);  // start the match between p1 and p2
                 p1 = NULL;  // reset p1 for the next match
             }
@@ -81,6 +83,11 @@ void match_clients(struct client *head) {
 void start_match(struct client *client1, struct client *client2) {
     char buf[MAX_BUF];
 
+
+    client1->status = BATTLE;
+    client2->status = BATTLE;
+    client1->opp = client2;
+    client2->opp = client1;
     // Initialize hitpoints and powermoves for both players
     client1->hp = rand_range(MIN_HP, MAX_HP);
     client2->hp = rand_range(MIN_HP, MAX_HP);
@@ -92,12 +99,20 @@ void start_match(struct client *client1, struct client *client2) {
     write(client1->fd, buf, strlen(buf));
     write(client2->fd, buf, strlen(buf));
 
+    sprintf(buf, "You have %d hp and %s has %d hp. \n", client1->hp, client2->name, client2->hp);
+    write(client1->fd, buf, strlen(buf));
+    sprintf(buf, "You have %d hp and %s has %d hp. \n", client2->hp, client1->name, client1->hp);
+    write(client2->fd, buf, strlen(buf));
+
     // Set the active player to be the first player
-    active_player = client1;
-    opponent = client2;
+    client1->isActive = true;
+    
+
+    //active_player = client1;
+    //opponent = client2;
 
     // Send menu of valid commands to the active player
-    send_menu(active_player);
+    send_menu(client1);
 }
 
 void end_match(struct client *client1, struct client *client2,struct client *top){
@@ -118,9 +133,15 @@ void end_match(struct client *client1, struct client *client2,struct client *top
     client2->prev_opp = client1;
     client1->opp = NULL;
     client2->opp = NULL;
-    client1->in_match = 0;
-    client2->in_match = 0;
-    match_clients(top);
+    client1->isActive = 0;
+    client2->isActive = 0;
+    client1->status = IN_LOBBY;
+    client2->status = IN_LOBBY;
+
+    enterLobby(client1);
+    enterLobby(client2);
+    //match_clients(top);
+    //match_clients(top);
 }
 
 void send_menu(struct client *p) {
@@ -129,11 +150,13 @@ void send_menu(struct client *p) {
     if (p!=NULL){
         write(p->fd, menu, strlen(menu));
     }
+
+
 }
 int attack(struct client *p, struct client *top) {
     char outbuf[512];
     int damage_amount = rand() % 5 + 2; // Regular attack: 2-6 hitpoints damage
-    opponent = p->opp;  // Set opponent
+    struct client * opponent = p->opp;  // Set opponent
     if (opponent != NULL) {
         opponent->hp -= damage_amount;
         if (opponent->hp <= 0) {
@@ -143,6 +166,7 @@ int attack(struct client *p, struct client *top) {
             // Remove defeated opponent
             end_match(p,opponent,top);
             //top = removeclient(top, opponent->fd);
+            return 0;
         } else {
             // Inform both clients about the attack and damage inflicted
             sprintf(outbuf, "You attacked %s and inflicted %d damage!\r\n", opponent->name, damage_amount);
@@ -151,6 +175,9 @@ int attack(struct client *p, struct client *top) {
             write(opponent->fd, outbuf, strlen(outbuf));
             sprintf(outbuf, "You have %d health remaining !\r\n", opponent->hp);
             write(opponent->fd, outbuf, strlen(outbuf));
+
+            sprintf(outbuf, "You have %d hp and %s has %d hp. \n", p->hp, opponent->name, opponent->hp);
+            write(p->fd, outbuf, strlen(outbuf));
         }
     } else {
         // No opponent found
@@ -167,7 +194,7 @@ int powermove(struct client *p, struct client *top) {
         bool hit = rand() % 2 == 0;
         if (hit) {
             int damage_amount = (rand() % 5 + 2) * 3; // Powermove: 3 times regular attack damage
-            opponent = p->opp;  // Set opponent
+            struct client * opponent = p->opp;  // Set opponent
             if (opponent != NULL) {
                 opponent->hp -= damage_amount;
                 if (opponent->hp <= 0) {
@@ -177,6 +204,7 @@ int powermove(struct client *p, struct client *top) {
                     // Remove defeated opponent
                     //top = removeclient(top, opponent->fd);
                     end_match(p,opponent,top);
+                    return 0;
                 } else {
                     // Inform both clients about the powermove and damage inflicted
                     sprintf(outbuf, "You used a powermove against %s and inflicted %d damage!\r\n", opponent->name, damage_amount);
@@ -185,6 +213,9 @@ int powermove(struct client *p, struct client *top) {
                     write(opponent->fd, outbuf, strlen(outbuf));
                     sprintf(outbuf, "You have %d health remaining !\r\n", opponent->hp);
                     write(opponent->fd, outbuf, strlen(outbuf));
+
+                    sprintf(outbuf, "You have %d hp and %s has %d hp. \n", p->hp, opponent->name, opponent->hp);
+                    write(p->fd, outbuf, strlen(outbuf));
                 }
             } else {
                 // No opponent found
@@ -215,62 +246,154 @@ int handleclient(struct client *p, struct client *top) {
     if (len > 0) {
         buf[len] = '\0';
         printf("Received %d bytes: %s", len, buf);
-        if (strncmp(buf, "a", strlen("a")) == 0) {
-            // Player wants to perform a regular attack
-            if (p == active_player) {
-                if (attack(p, top)==1)
-                {active_player = p->opp;}
-            } else {
-                // Inactive player's turn or invalid command, discard
-                sprintf(outbuf, "It's not your turn to attack.\n");
-                write(p->fd, outbuf, strlen(outbuf));
+
+        if (p->status == IN_LOBBY){
+            if (strncmp(buf, "m", strlen("m")) == 0){
+                //Player joint match making
+                p->status = WAITING;
+
+                // Notify the new client and others
+                sprintf(buf, "You are awaiting an opponent.\n"); 
+                write(p->fd, buf, strlen(buf));
             }
-        } else if (strncmp(buf, "p", strlen("p")) == 0) {
-            // Player wants to perform a powermove
-            if (p == active_player) {
-                if (powermove(p, top)==1)
-                {active_player = p->opp;}
-                
-            } else {
-                // Inactive player's turn or invalid command, discard
-                sprintf(outbuf, "It's not your turn to attack.\n");
-                write(p->fd, outbuf, strlen(outbuf));
-            }
-        } else if (strncmp(buf, "s", strlen("s")) == 0) {
-            // Player wants to say something
-            if (p == active_player) {
-                char *message = buf + strlen("s") + 1; // Skip the "s" command and the following space
-                // Iterate through the message and replace newline characters with null terminators
-                char *newline = strchr(message, '\n');
-                if (newline != NULL) {
-                    *newline = '\0';
+            else if (strncmp(buf, "l", 1) == 0) { // If you're checking for "p", comparing the first character is sufficient
+                char m[MAX_BUF] = ""; // Initialize the message buffer
+                struct client *n;
+
+                for (n = top; n != NULL; n = n->next) {
+                    if (n->status == IN_LOBBY && n!=p) {
+                        char value[200];
+                        // Use n->name and n->fd since you're iterating with n
+                        sprintf(value, "%s: %d\n", n->name, n->fd);
+                        // Check if appending this client would overflow the buffer
+                        if (strlen(m) + strlen(value) < MAX_BUF) {
+                            strcat(m, value); // Append the current client's info to the message
+                        } else {
+                            // Handle overflow, maybe by sending the message in parts or logging an error
+                            break;
+                        }
+                    }
                 }
-                // Prepare the message to be sent
-                char outbuf[MAX_BUF];
-                sprintf(outbuf, "%s says: %s\n", p->name, message);
-                // Send the message to both players
+
+                // After the loop, send the accumulated message to the client who sent "p"
+                if (strlen(m) > 0) { // Check if there's anything to send
+                    write(p->fd, m, strlen(m)); // Assume p->fd is the file descriptor for the client who sent "p"
+                } else {
+                    // Optionally handle the case where no players are waiting
+                    char *noPlayersMsg = "No players in the lobby.\n";
+                    write(p->fd, noPlayersMsg, strlen(noPlayersMsg));
+                }
+
+
+
+
+                
+            }
+
+            else if (strncmp(buf, "p", 1) == 0){
+                char *message = buf + strlen("p") + 1; // Skip the "s" command and the following space
+                // Iterate through the message and replace newline characters with null terminators
+                int found = 0;
+                struct client *opp;
+                int fd = atoi(message);
+                struct client *n;
+                for (n = top; n != NULL; n = n->next) {
+                    if (n->fd == fd && n!=p) {
+                        found = 1;
+                        opp = n;
+                    }
+                }
+                if (found){
+                    start_match(p,opp);
+                }
+                else{
+                    sprintf(outbuf, "No player with ID %d", fd);
+                    write(p->fd,outbuf,strlen(outbuf));
+                }
+                
+            }
+            else {
+                // Invalid command, discard
+                sprintf(outbuf, "Invalid command.\n");
                 write(p->fd, outbuf, strlen(outbuf));
-                write(p->opp->fd, outbuf, strlen(outbuf));
+                }
+        }
+
+
+
+        else if (p->status == BATTLE){
+            if (strncmp(buf, "a", strlen("a")) == 0) {
+                // Player wants to perform a regular attack
+                if (p->isActive) {
+                    if (attack(p, top)==1)
+                    {p->opp->isActive = 1; p->isActive = 0;
+                    
+                        sprintf(buf, "Waiting for Opponent\n");
+                        write(p->fd, buf, strlen(buf));
+
+                        send_menu(p->opp);
+                    }
+                } else {
+                    // Inactive player's turn or invalid command, discard
+                    sprintf(outbuf, "It's not your turn to attack.\n");
+                    write(p->fd, outbuf, strlen(outbuf));
+                }
+            } else if (strncmp(buf, "p", strlen("p")) == 0) {
+                // Player wants to perform a powermove
+                if (p->isActive) {
+                    if (powermove(p, top)==1)
+                    {p->opp->isActive = 1; p->isActive = 0;
+                    
+                        sprintf(buf, "Waiting for Opponent\n");
+
+                        write(p->fd, buf, strlen(buf));
+
+                        send_menu(p->opp);
+                    }
+                    
+                } else {
+                    // Inactive player's turn or invalid command, discard
+                    sprintf(outbuf, "It's not your turn to attack.\n");
+                    write(p->fd, outbuf, strlen(outbuf));
+                }
+            } else if (strncmp(buf, "s", strlen("s")) == 0) {
+                // Player wants to say something
+                if (p->isActive) {
+                    char *message = buf + strlen("s") + 1; // Skip the "s" command and the following space
+                    // Iterate through the message and replace newline characters with null terminators
+                    char *newline = strchr(message, '\n');
+                    if (newline != NULL) {
+                        *newline = '\0';
+                    }
+                    // Prepare the message to be sent
+                    char outbuf[MAX_BUF];
+                    sprintf(outbuf, "%s says: %s\n", p->name, message);
+                    // Send the message to both players
+                    write(p->fd, outbuf, strlen(outbuf));
+                    write(p->opp->fd, outbuf, strlen(outbuf));
+                    } 
+                else {
+                    // Inactive player's turn or invalid command, discard
+                    sprintf(outbuf, "It's not your turn to talk.\n");
+                    write(p->fd, outbuf, strlen(outbuf));
+                }
+
+
                 } 
-            else {
-                // Inactive player's turn or invalid command, discard
-                sprintf(outbuf, "It's not your turn to talk.\n");
+                else {
+                // Invalid command, discard
+                sprintf(outbuf, "Invalid command.\n");
                 write(p->fd, outbuf, strlen(outbuf));
-            }
-
-
-            } 
-            else {
-            // Invalid command, discard
-            sprintf(outbuf, "Invalid command.\n");
-            write(p->fd, outbuf, strlen(outbuf));
-            }
+                }
+        }
         // Send the menu of valid commands to the active player
         // if (p == active_player) {
         //     sprintf(outbuf, "Menu:\n(a) Attack\n(p) Powermove\n(s) Say something\n");
         //     write(p->fd, outbuf, strlen(outbuf));
         // }
-        send_menu(active_player);
+        if (p!=NULL && p->isActive){
+            send_menu(p);
+        }
         return 0;
         } else  { 
         printf("Disconnect from %s\n", inet_ntoa(p->ipaddr));
@@ -283,6 +406,7 @@ int handleclient(struct client *p, struct client *top) {
 
 static struct client *addclient(struct client *top, int fd, struct in_addr addr) {
     char buf[MAX_BUF];
+    
     struct client *p = malloc(sizeof(struct client));
     if (!p) {
         perror("malloc");
@@ -303,33 +427,64 @@ static struct client *addclient(struct client *top, int fd, struct in_addr addr)
         free(p);
         return top;  // If reading name fails, abort adding the client
     }
+    // char ch;
+    // char name[MAX_NAME]; // Assuming name is defined similarly
+    // int buffer_index = 0;
+    // //struct client *p; // Assuming p is properly initialized somewhere
+
+    // while (1) {
+    //     read(STDIN_FILENO, &ch, 1); // Read character by character
+
+    //     if (ch == '\n') {
+    //         name[buffer_index] = '\0';  // Correctly null-terminate the name before resetting index
+
+    //         // Assume p is a valid pointer to a client structure
+    //         strncpy(p->name, name, sizeof(p->name) - 1);
+    //         p->name[sizeof(p->name) - 1] = '\0';  // Ensure null-termination
+
+    //         // Reset the buffer
+    //         memset(name, 0, sizeof(name));
+    //         printf("NAME: %s\n", p->name); // Added a newline for clarity
+    //         break; // Exit the loop
+    //     } else {
+    //         // Append character to buffer
+    //         if (buffer_index < sizeof(name) - 1) {
+    //             name[buffer_index++] = ch;
+    //         }
+    //     }
+    // }
 
     printf("Adding client %s\n", inet_ntoa(addr));
 
     p->fd = fd;
     p->ipaddr = addr;
     p->next = top;
-    p->in_match = 0;
+    p->status = IN_LOBBY;
     p->opp = NULL;
     p->prev_opp = NULL;
     top = p;
 
-    // Notify the new client and others
-    sprintf(buf, "You are awaiting an opponent.\n"); 
-    write(fd, buf, strlen(buf));
+    
 
     char message[MAX_NAME+strlen(" has entered the arena")];
     sprintf(message, "%s has entered the arena\n", p->name);
+    enterLobby(p);
+    
     broadcast(top, message, strlen(message), fd);
 
-    // Add client to waiting client queue
-    // Enqueue the new client
-    // enqueue_client(&waiting_clients_queue, p);
-
     // Attempt to match clients
-    match_clients(top);
+    //match_clients(top);
 
     return top;
+}
+
+void enterLobby(struct client * p){
+
+    char buf[MAX_BUF];
+
+    sprintf(buf, "Welcome to the Arena, please press m to join random matchmaking, l to list players in lobby and p with player number to play aginst friend\r\n");
+    write(p->fd,buf,strlen(buf));
+
 }
 
 struct client *removeclient(struct client *top, int fd) {
@@ -343,12 +498,18 @@ struct client *removeclient(struct client *top, int fd) {
         struct client *t = (*p)->next;
         printf("Removing client %d %s\n", fd, inet_ntoa((*p)->ipaddr));
 
-        if ((*p)->in_match && (*p)->opp != NULL) {
-            (*p)->opp->in_match = 0; // Clear the in_match flag for the opponent
-            (*p)->opp->opp = NULL; // Clear the in_match flag for the opponent
+        if ((*p)->status == BATTLE && (*p)->opp != NULL) {
+            //(*p)->opp->in_match = 0; // Clear the in_match flag for the opponent
+            //(*p)->opp->opp = NULL; // Clear the in_match flag for the opponent
             // Correctly send the message to the opponent using their fd
             write((*p)->opp->fd, "Opponent Disconnected, Going back to arena\n", strlen("Opponent Disconnected, Going back to arena\n"));
-            match_clients(top);
+            
+            (*p)->opp->prev_opp = NULL;
+            (*p)->opp->status = IN_LOBBY;
+            (*p)->opp->opp = NULL;
+            (*p)->opp->isActive = 0;
+
+            enterLobby((*p)->opp);
         }
 
         free(*p);
@@ -363,7 +524,7 @@ struct client *removeclient(struct client *top, int fd) {
 void broadcast(struct client *top, char *s, int size, int exclude_fd) {
     struct client *p;
     for (p = top; p; p = p->next) {
-        if (p->fd != exclude_fd && !p->in_match) { 
+        if (p->fd != exclude_fd && p->status == BATTLE) { 
             write(p->fd, s, size);
         }
         /* should probably check write() return value and perhaps remove client */
@@ -394,6 +555,8 @@ int main(void) {
     maxfd = listenfd;
 
     while (1) {
+
+        match_clients(head);
         // make a copy of the set before we pass it into select
         rset = allset;
         /* timeout in seconds (You may not need to use a timeout for
@@ -404,6 +567,11 @@ int main(void) {
         nready = select(maxfd + 1, &rset, NULL, NULL, &tv);
         if (nready == 0) {
             printf("No response from clients in %d seconds\n", SECONDS);
+            for (p = head; p != NULL; p = p->next){
+                if (p->status == 1 ){
+                    printf("%s in lobby\n", p->name);
+                }
+            }
             continue;
         }
 
@@ -429,7 +597,7 @@ int main(void) {
             head = addclient(head, clientfd, q.sin_addr);
             //match_clients(head);
         }
-        match_clients(head);
+        
 
         for(i = 0; i <= maxfd; i++) {
             if (FD_ISSET(i, &rset)) {
