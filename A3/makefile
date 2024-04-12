@@ -1,9 +1,9 @@
 CC = gcc
 
-PORT=54890
+PORT=54771
 CFLAGS= -DPORT=\$(PORT) -g -Wall
-FILES=./simpleselect
-all: ./simpleselect
+FILES=./battle
+all: ./battle
 
 
 # clean up
