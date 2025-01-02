@@ -1,6 +1,6 @@
 CC = gcc
 
-PORT=54771
+PORT=54770
 CFLAGS= -DPORT=\$(PORT) -g -Wall
 FILES=./battle
 all: ./battle

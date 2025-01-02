@@ -11,14 +11,14 @@
 #include <time.h>
  
 #ifndef PORT
-    #define PORT 54771
+    #define PORT 54770
 #endif
  
 #define SECONDS 2
 #define MAX_BUF 160
 #define MAX_NAME 40
-#define MAX_HP 10
-#define MIN_HP 5
+#define MAX_HP 20
+#define MIN_HP 10
 #define MAX_POWERMOVES 3
 #define MIN_POWERMOVES 1
 #define REGULAR_DAMAGE_MIN 2
@@ -110,7 +110,10 @@ void start_match(struct client *client1, struct client *client2) {
  
     //active_player = client1;
     //opponent = client2;
- 
+    
+    // send waiting for the inactive player
+    sprintf(buf, "\nPlayer %s starts. Waiting for Opponent. \n\n", client1->name);
+    write(client2->fd, buf, strlen(buf));
     // Send menu of valid commands to the active player
     send_menu(client1);
 }
@@ -305,6 +308,7 @@ int handleclient(struct client *p, struct client *top) {
                 }
                 if (found){
                     start_match(p,opp);
+
                 }
                 else{
                     sprintf(outbuf, "\nNo player with ID %d\n\n", fd);
@@ -317,6 +321,7 @@ int handleclient(struct client *p, struct client *top) {
                 sprintf(outbuf, "\nInvalid command.\n\n");
                 write(p->fd, outbuf, strlen(outbuf));
                 }
+            return 0;
         }
  
  
